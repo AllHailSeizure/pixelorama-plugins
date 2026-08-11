@@ -1,0 +1,10 @@
+{
+  "name": "TileTools",
+  "display_name": "TileTools",
+  "description": "Grid-based tile selection and selection-scoped tiling for tileset workflows",
+  "author": "AllHailSeizure",
+  "version": "0.1",
+  "supported_api_versions": [4],
+  "license": "MIT",
+  "nodes": ["Main.tscn"]
+}

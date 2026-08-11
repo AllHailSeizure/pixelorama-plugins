@@ -1,0 +1,17 @@
+[gd_scene load_steps=2 format=3]
+
+[ext_resource type="Script" path="res://src/Extensions/EasyGradient/GradientTool.gd" id="1"]
+
+[node name="ToolOptions" type="VBoxContainer"]
+size_flags_horizontal = 3
+script = ExtResource("1")
+
+[node name="ColorRect" type="ColorRect" parent="."]
+custom_minimum_size = Vector2(0, 4)
+layout_mode = 2
+
+[node name="Label" type="Label" parent="."]
+layout_mode = 2
+theme_type_variation = &"HeaderSmall"
+text = "Gradient Line"
+horizontal_alignment = 1

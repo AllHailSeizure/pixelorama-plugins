@@ -1,0 +1,28 @@
+Godot Engine v4.6.3.stable.official.7d41c59c4 - https://godotengine.org
+
+SCRIPT ERROR: Parse Error: Could not find type "BaseCel" in the current scope.
+   at: GDScript::reload (res://src/Extensions/EasySparkle/SparkleTool.gd:24)
+SCRIPT ERROR: Parse Error: Identifier "ExtensionsApi" not declared in the current scope.
+   at: GDScript::reload (res://src/Extensions/EasySparkle/SparkleTool.gd:32)
+SCRIPT ERROR: Parse Error: Identifier "ExtensionsApi" not declared in the current scope.
+   at: GDScript::reload (res://src/Extensions/EasySparkle/SparkleTool.gd:34)
+SCRIPT ERROR: Parse Error: Identifier "ExtensionsApi" not declared in the current scope.
+   at: GDScript::reload (res://src/Extensions/EasySparkle/SparkleTool.gd:70)
+SCRIPT ERROR: Parse Error: Identifier "ExtensionsApi" not declared in the current scope.
+   at: GDScript::reload (res://src/Extensions/EasySparkle/SparkleTool.gd:90)
+SCRIPT ERROR: Parse Error: Identifier "ExtensionsApi" not declared in the current scope.
+   at: GDScript::reload (res://src/Extensions/EasySparkle/SparkleTool.gd:96)
+SCRIPT ERROR: Parse Error: Identifier "ExtensionsApi" not declared in the current scope.
+   at: GDScript::reload (res://src/Extensions/EasySparkle/SparkleTool.gd:117)
+SCRIPT ERROR: Parse Error: Identifier "ExtensionsApi" not declared in the current scope.
+   at: GDScript::reload (res://src/Extensions/EasySparkle/SparkleTool.gd:120)
+SCRIPT ERROR: Parse Error: Could not find type "PixelCel" in the current scope.
+   at: GDScript::reload (res://src/Extensions/EasySparkle/SparkleTool.gd:121)
+SCRIPT ERROR: Parse Error: Identifier "ExtensionsApi" not declared in the current scope.
+   at: GDScript::reload (res://src/Extensions/EasySparkle/SparkleTool.gd:256)
+SCRIPT ERROR: Parse Error: Identifier "ExtensionsApi" not declared in the current scope.
+   at: GDScript::reload (res://src/Extensions/EasySparkle/SparkleTool.gd:291)
+SCRIPT ERROR: Parse Error: Could not find type "PixelCel" in the current scope.
+   at: GDScript::reload (res://src/Extensions/EasySparkle/SparkleTool.gd:292)
+ERROR: Failed to load script "res://src/Extensions/EasySparkle/SparkleTool.gd" with error "Parse error".
+   at: load (modules/gdscript/gdscript.cpp:2907)
