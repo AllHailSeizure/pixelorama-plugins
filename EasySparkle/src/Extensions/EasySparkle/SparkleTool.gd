@@ -1,7 +1,7 @@
 extends Node
 
-const SparkleColorTransform = preload(
-	"res://src/Extensions/EasySparkle/SparkleColor.gd"
+const SparklePalette = preload(
+	"res://src/Extensions/EasySparkle/SparklePalette.gd"
 )
 const SparkleRegionFinder = preload(
 	"res://src/Extensions/EasySparkle/SparkleRegion.gd"
@@ -14,15 +14,12 @@ var kname: String
 var tool_slot = null
 var cursor_text := ""
 
-var adjustment := 30.0
-
-var _adjustment_spin: SpinBox
-var _description: Label
-var _source_swatch: ColorRect
-var _result_swatch: ColorRect
 var _region_label: Label
 var _canvas: Node2D
 var _hover := Vector2i.ZERO
+
+# One labeled swatch per SparklePalette role, in SparklePalette.ROLE_ORDER.
+var _palette_swatches: Array[ColorRect] = []
 
 # The region targeted by the most recent click. Detection is read-only —
 # nothing here ever writes to the image. Recoloring the region is out of
@@ -40,34 +37,24 @@ func _ready() -> void:
 		else:
 			$ColorRect.color = ExtensionsApi.general.get_global().right_tool_color
 
-	var amount_label := Label.new()
-	amount_label.text = "Lightness shift:"
-	add_child(amount_label)
-
-	_adjustment_spin = SpinBox.new()
-	_adjustment_spin.min_value = -100
-	_adjustment_spin.max_value = 100
-	_adjustment_spin.step = 1
-	_adjustment_spin.value = adjustment
-	_adjustment_spin.suffix = "%"
-	_adjustment_spin.allow_greater = false
-	_adjustment_spin.allow_lesser = false
-	_adjustment_spin.value_changed.connect(_on_adjustment_changed)
-	add_child(_adjustment_spin)
-
-	_description = Label.new()
-	_description.autowrap_mode = TextServer.AUTOWRAP_WORD_SMART
-	add_child(_description)
-
 	var preview_label := Label.new()
-	preview_label.text = "Hovered color  ->  Result"
+	preview_label.text = "Sparkle palette preview (hovered pixel)"
+	preview_label.autowrap_mode = TextServer.AUTOWRAP_WORD_SMART
 	add_child(preview_label)
 
-	var swatch_row := HBoxContainer.new()
-	swatch_row.size_flags_horizontal = Control.SIZE_EXPAND_FILL
-	add_child(swatch_row)
-	_source_swatch = _make_swatch(swatch_row)
-	_result_swatch = _make_swatch(swatch_row)
+	var palette_row := HBoxContainer.new()
+	palette_row.size_flags_horizontal = Control.SIZE_EXPAND_FILL
+	add_child(palette_row)
+	for role in SparklePalette.ROLE_ORDER:
+		var column := VBoxContainer.new()
+		column.size_flags_horizontal = Control.SIZE_EXPAND_FILL
+		palette_row.add_child(column)
+		_palette_swatches.append(_make_swatch(column))
+		var caption := Label.new()
+		caption.text = SparklePalette.role_name(role)
+		caption.autowrap_mode = TextServer.AUTOWRAP_WORD_SMART
+		caption.horizontal_alignment = HORIZONTAL_ALIGNMENT_CENTER
+		column.add_child(caption)
 
 	_region_label = Label.new()
 	_region_label.autowrap_mode = TextServer.AUTOWRAP_WORD_SMART
@@ -80,8 +67,7 @@ func _ready() -> void:
 
 	_canvas = ExtensionsApi.general.get_canvas()
 	load_config()
-	_update_description()
-	_update_preview()
+	_update_palette_preview()
 	_update_region_status()
 
 
@@ -111,18 +97,17 @@ func load_config() -> void:
 
 
 func get_config() -> Dictionary:
-	return {"adjustment": adjustment}
+	# The palette is derived on the fly from SparklePalette; there is
+	# currently nothing about it that needs to be persisted per tool slot.
+	return {}
 
 
-func set_config(config: Dictionary) -> void:
-	adjustment = clampf(float(config.get("adjustment", adjustment)), -100.0, 100.0)
+func set_config(_config: Dictionary) -> void:
+	pass
 
 
 func update_config() -> void:
-	if _adjustment_spin != null:
-		_adjustment_spin.value = adjustment
-	_update_description()
-	_update_preview()
+	_update_palette_preview()
 
 
 ## A click targets the connected, exact-color region under the cursor and
@@ -162,7 +147,7 @@ func cancel_tool() -> void:
 
 func cursor_move(pos: Vector2i) -> void:
 	_hover = pos
-	_update_preview()
+	_update_palette_preview()
 
 
 func draw_indicator(left: bool) -> void:
@@ -176,55 +161,30 @@ func draw_indicator(left: bool) -> void:
 		for point in _region_points:
 			_canvas.indicators.draw_rect(Rect2(Vector2(point), Vector2.ONE), region_color, true)
 
-	var image := _current_image()
-	if image == null or not _in_bounds(image, _hover):
-		return
-	var result := transform_color(image.get_pixelv(_hover), adjustment)
-	var fill := result
-	fill.a = maxf(fill.a, 0.65)
-	_canvas.indicators.draw_rect(Rect2(Vector2(_hover), Vector2.ONE), fill, true)
-	var outline := Color.WHITE if result.get_luminance() < 0.5 else Color.BLACK
-	outline.a = 0.9
-	_canvas.indicators.draw_rect(Rect2(Vector2(_hover), Vector2.ONE), outline, false, 0.5)
-
 
 func draw_preview() -> void:
 	pass
 
 
-func transform_color(source: Color, amount_percent: float) -> Color:
-	return SparkleColorTransform.transform(source, amount_percent)
-
-
-func _on_adjustment_changed(value: float) -> void:
-	adjustment = value
-	_update_description()
-	_update_preview()
-	save_config()
-
-
-func _update_description() -> void:
-	if _description == null:
-		return
-	if adjustment > 0.0:
-		_description.text = "Glint: move %.0f%% of the remaining distance toward white." % adjustment
-	elif adjustment < 0.0:
-		_description.text = "Shadow: move %.0f%% of the distance toward black." % -adjustment
-	else:
-		_description.text = "No lightness change."
-
-
-func _update_preview() -> void:
-	if _source_swatch == null or _result_swatch == null:
+## Refreshes the tool-options palette preview swatches from the pixel
+## currently under the cursor. Every role in SparklePalette.ROLE_ORDER gets
+## its own swatch, so the full six-role palette is always visible together,
+## not just whichever role a user happens to pick. This never reads or
+## writes anything but the swatch colors themselves -- no image is touched.
+func _update_palette_preview() -> void:
+	if _palette_swatches.is_empty():
 		return
 	var image := _current_image()
-	if image == null or not _in_bounds(image, _hover):
-		_source_swatch.color = Color.TRANSPARENT
-		_result_swatch.color = Color.TRANSPARENT
+	var valid := image != null and _in_bounds(image, _hover)
+	if not valid:
+		for swatch in _palette_swatches:
+			swatch.color = Color.TRANSPARENT
 		return
 	var source := image.get_pixelv(_hover)
-	_source_swatch.color = source
-	_result_swatch.color = transform_color(source, adjustment)
+	var palette := SparklePalette.build(source)
+	for i in SparklePalette.ROLE_ORDER.size():
+		var role = SparklePalette.ROLE_ORDER[i]
+		_palette_swatches[i].color = palette[role]
 
 
 func _update_region_status() -> void:
