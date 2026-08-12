@@ -11,17 +11,22 @@ extends RefCounted
 ## land, then writes the resulting colors onto `image`.
 ##
 ## Placement is driven by two deterministic, purely coordinate-based scores
-## computed per pixel -- no RNG, no clock, nothing that could differ between
-## two calls on the same region, regardless of which pixel was clicked to
-## find it:
+## computed per pixel -- given the same region, quotas, and seed, the result
+## is always the same, regardless of which pixel was clicked to find the
+## region or what order its points were visited in:
 ## - A direction score that favors a fixed upper-left light source: pixels
 ##   closer to the region's upper-left corner score higher, pixels closer
-##   to the lower-right score lower.
+##   to the lower-right score lower. The direction score never depends on
+##   the seed, so the v1 lighting direction is fixed regardless of reroll.
 ## - A small-block noise score, sampled from a coarse grid over the region
 ##   so that neighboring pixels usually share the same noise value. This
 ##   keeps highlight selection from spreading out as fine, evenly scattered
-##   noise -- instead it clumps into small patches -- while remaining fully
-##   determined by pixel coordinates alone.
+##   noise -- instead it clumps into small patches. The noise is seeded: a
+##   given `seed` always produces the same noise field for the same region,
+##   but a different seed reshuffles which blocks read as "noisy", which is
+##   what lets a reroll (same region, same palette, same quotas, new seed)
+##   produce a visibly different highlight arrangement without touching
+##   anything else.
 ##
 ## Highlights (soft highlight, bright highlight, peak sparkle) are assigned
 ## starting from the rarest, most extreme role down, picked from the
@@ -30,9 +35,15 @@ extends RefCounted
 ## so sparkles read as distinct points rather than a single blob. Shadows
 ## (deep shadow, shadow) are assigned from the lowest pure-direction-scoring
 ## pixels remaining, i.e. the side opposite the light -- shading reads best
-## as a coherent falloff, so no noise is mixed in for shadows. Every role's
-## quota (SparkleQuota's contract) is met exactly; whatever pixels are left
-## over are BASE.
+## as a coherent falloff, so no noise (and therefore no seed) is mixed into
+## shadow placement. Every role's quota (SparkleQuota's contract) is met
+## exactly; whatever pixels are left over are BASE.
+##
+## Because placement is a pure function of (points, color, quotas, seed),
+## calling `apply` again for the same region with a new seed regenerates
+## the arrangement from that original source data -- it does not read or
+## build on whatever is currently painted on `image`, so a reroll never
+## compounds on top of a previous fill or reroll.
 
 const SparklePalette = preload("res://src/Extensions/EasySparkle/SparklePalette.gd")
 const SparkleQuota = preload("res://src/Extensions/EasySparkle/SparkleQuota.gd")
@@ -70,6 +81,12 @@ const _SHADOW_ORDER: Array[Role] = [Role.DEEP_SHADOW, Role.SHADOW]
 ## alpha), so the silhouette and alpha channel are unchanged. Indexed
 ## images are remapped afterward the same way EasyGradient's fill does.
 ##
+## `seed` drives the noise term used to place highlights (see the class
+## doc): the same region, profile, and seed always produce the same
+## arrangement, while a different seed reshuffles highlight placement --
+## this is what a "reroll" is, at this layer. Defaults to 0, which
+## reproduces the original (pre-seed) placement exactly.
+##
 ## Returns a Dictionary keyed by SparklePalette.Role with the number of
 ## pixels actually painted that role -- always identical to
 ## SparkleQuota.build(region["points"].size(), profile) -- so callers can
@@ -77,7 +94,7 @@ const _SHADOW_ORDER: Array[Role] = [Role.DEEP_SHADOW, Role.SHADOW]
 ##
 ## A null image or an empty/missing region is a no-op that returns
 ## all-zero counts.
-static func apply(image: Image, region: Dictionary, profile: Dictionary = SparkleQuota.DEFAULT_PROFILE) -> Dictionary:
+static func apply(image: Image, region: Dictionary, profile: Dictionary = SparkleQuota.DEFAULT_PROFILE, seed: int = 0) -> Dictionary:
 	var counts := _zero_counts()
 	if image == null or region.is_empty():
 		return counts
@@ -89,7 +106,7 @@ static func apply(image: Image, region: Dictionary, profile: Dictionary = Sparkl
 	var source: Color = region["color"]
 	var palette := SparklePalette.build(source)
 	var quotas := SparkleQuota.build(points.size(), profile)
-	var assignment := _assign_roles(points, quotas)
+	var assignment := _assign_roles(points, quotas, seed)
 
 	for point in points:
 		var role = assignment[point]
@@ -108,9 +125,11 @@ static func apply(image: Image, region: Dictionary, profile: Dictionary = Sparkl
 
 
 ## Maps every point in `points` to exactly the SparklePalette.Role dictated
-## by `quotas`, deterministically from pixel coordinates alone -- the same
-## `points` set always produces the same mapping regardless of its order.
-static func _assign_roles(points: Array[Vector2i], quotas: Dictionary) -> Dictionary:
+## by `quotas`, deterministically from pixel coordinates and `seed` alone --
+## the same `points` set and `seed` always produce the same mapping
+## regardless of the points' order; a different `seed` reshuffles highlight
+## placement only (shadows and BASE follow from direction/quotas alone).
+static func _assign_roles(points: Array[Vector2i], quotas: Dictionary, seed: int = 0) -> Dictionary:
 	var assignment := {}
 	var bounds := _bounds(points)
 
@@ -118,7 +137,7 @@ static func _assign_roles(points: Array[Vector2i], quotas: Dictionary) -> Dictio
 	var shadow_scores := {}
 	for point in points:
 		var direction := _direction_score(point, bounds)
-		highlight_scores[point] = direction * _DIRECTION_WEIGHT + _noise_score(point) * _NOISE_WEIGHT
+		highlight_scores[point] = direction * _DIRECTION_WEIGHT + _noise_score(point, seed) * _NOISE_WEIGHT
 		shadow_scores[point] = direction
 
 	var remaining: Array[Vector2i] = points.duplicate()
@@ -224,15 +243,18 @@ static func _direction_score(point: Vector2i, bounds: Dictionary) -> float:
 
 
 ## Deterministic pseudo-noise in [0, 1), constant across each
-## _NOISE_BLOCK_SIZE square so nearby pixels usually share a value.
-static func _noise_score(point: Vector2i) -> float:
+## _NOISE_BLOCK_SIZE square so nearby pixels usually share a value. Mixing
+## `seed` into the hash reshuffles which blocks read as "noisy" without
+## changing the block structure itself, so seed 0 reproduces the original
+## (pre-seed) noise field exactly.
+static func _noise_score(point: Vector2i, seed: int = 0) -> float:
 	var block_x := point.x / _NOISE_BLOCK_SIZE
 	var block_y := point.y / _NOISE_BLOCK_SIZE
-	return float(_hash2(block_x, block_y) % 1000) / 999.0
+	return float(_hash2(block_x, block_y, seed) % 1000) / 999.0
 
 
-static func _hash2(x: int, y: int) -> int:
-	var h := x * 374761393 + y * 668265263
+static func _hash2(x: int, y: int, seed: int = 0) -> int:
+	var h := x * 374761393 + y * 668265263 + seed * 2246822519
 	h = (h ^ (h >> 13)) * 1274126177
 	return absi(h ^ (h >> 16))
 

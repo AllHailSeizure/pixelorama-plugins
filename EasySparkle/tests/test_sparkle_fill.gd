@@ -20,6 +20,10 @@ func _init() -> void:
 	_test_empty_region_is_a_no_op()
 	_test_custom_profile_counts_match()
 	_test_indexed_image_guarded_calls_do_not_crash()
+	_test_default_seed_matches_explicit_seed_zero()
+	_test_same_seed_reproduces_same_arrangement()
+	_test_different_seed_changes_placement_but_not_quotas_or_palette()
+	_test_reroll_regenerates_from_source_without_compounding()
 
 	print("EasySparkle fill checks passed")
 	quit(0)
@@ -270,6 +274,97 @@ func _test_indexed_image_guarded_calls_do_not_crash() -> void:
 	for role in SparklePalette.ROLE_ORDER:
 		total += counts[role]
 	_assert(total == region["points"].size(), "fill should complete normally when indexed-image hooks are absent")
+
+
+## Seed 0 (the default) must reproduce the exact placement SparkleFill
+## produced before seeds existed -- calling apply() with no seed argument
+## and calling it with an explicit seed of 0 must be indistinguishable.
+func _test_default_seed_matches_explicit_seed_zero() -> void:
+	var built_default := _build_square_image(16)
+	var image_default: Image = built_default["image"]
+	var region_default := SparkleRegion.find_region(image_default, built_default["offset"])
+	SparkleFill.apply(image_default, region_default)
+
+	var built_zero := _build_square_image(16)
+	var image_zero: Image = built_zero["image"]
+	var region_zero := SparkleRegion.find_region(image_zero, built_zero["offset"])
+	SparkleFill.apply(image_zero, region_zero, SparkleQuota.DEFAULT_PROFILE, 0)
+
+	_assert(_images_equal(image_default, image_zero), "omitting the seed should be identical to passing seed 0")
+
+
+## A "visible seed reproduces the same arrangement for identical source data
+## and settings": the same region, profile, and seed applied to two fresh
+## copies of the same source image must land on byte-identical results.
+func _test_same_seed_reproduces_same_arrangement() -> void:
+	var built_a := _build_square_image(18)
+	var image_a: Image = built_a["image"]
+	var region_a := SparkleRegion.find_region(image_a, built_a["offset"])
+	SparkleFill.apply(image_a, region_a, SparkleQuota.DEFAULT_PROFILE, 12345)
+
+	var built_b := _build_square_image(18)
+	var image_b: Image = built_b["image"]
+	var region_b := SparkleRegion.find_region(image_b, built_b["offset"])
+	SparkleFill.apply(image_b, region_b, SparkleQuota.DEFAULT_PROFILE, 12345)
+
+	_assert(_images_equal(image_a, image_b), "the same seed on the same source region should reproduce the same arrangement")
+
+
+## Rerolling must change *where* colors land while leaving the palette,
+## quotas, target region, and shadow-side lighting untouched -- only
+## highlight placement is seed-driven.
+func _test_different_seed_changes_placement_but_not_quotas_or_palette() -> void:
+	var built_a := _build_square_image(18)
+	var image_a: Image = built_a["image"]
+	var region_a := SparkleRegion.find_region(image_a, built_a["offset"])
+	var counts_a := SparkleFill.apply(image_a, region_a, SparkleQuota.DEFAULT_PROFILE, 1)
+
+	var built_b := _build_square_image(18)
+	var image_b: Image = built_b["image"]
+	var region_b := SparkleRegion.find_region(image_b, built_b["offset"])
+	var counts_b := SparkleFill.apply(image_b, region_b, SparkleQuota.DEFAULT_PROFILE, 2)
+
+	_assert(not _images_equal(image_a, image_b), "different seeds should visibly change highlight placement")
+
+	for role in SparklePalette.ROLE_ORDER:
+		_assert(
+			counts_a[role] == counts_b[role],
+			"role %s quota should be identical across seeds (got %d vs %d)" % [role, counts_a[role], counts_b[role]]
+		)
+
+	var palette_a := SparklePalette.build(region_a["color"])
+	var palette_b := SparklePalette.build(region_b["color"])
+	for role in SparklePalette.ROLE_ORDER:
+		_assert(
+			_colors_match(palette_a[role], palette_b[role]),
+			"palette color for role %s should be unaffected by the seed" % role
+		)
+
+	_assert(region_a["points"].size() == region_b["points"].size(), "target region should be unaffected by the seed")
+
+
+## A reroll is defined as calling apply() again for the same source region
+## with a new seed -- it must regenerate the arrangement purely from the
+## original source data, not transform/compound on top of the previous
+## fill already painted on the image. Rerolling on an already-filled image
+## must match a single fresh fill made directly with the reroll's seed.
+func _test_reroll_regenerates_from_source_without_compounding() -> void:
+	var built := _build_square_image(16)
+	var image: Image = built["image"]
+	var region := SparkleRegion.find_region(image, built["offset"])
+
+	SparkleFill.apply(image, region, SparkleQuota.DEFAULT_PROFILE, 7)  # initial fill
+	SparkleFill.apply(image, region, SparkleQuota.DEFAULT_PROFILE, 42)  # reroll, same region dict
+
+	var built_fresh := _build_square_image(16)
+	var image_fresh: Image = built_fresh["image"]
+	var region_fresh := SparkleRegion.find_region(image_fresh, built_fresh["offset"])
+	SparkleFill.apply(image_fresh, region_fresh, SparkleQuota.DEFAULT_PROFILE, 42)  # straight to seed 42
+
+	_assert(
+		_images_equal(image, image_fresh),
+		"rerolling an already-filled region should match a fresh fill with the reroll's seed, not compound with the prior fill"
+	)
 
 
 func _color_in(color: Color, palette: Array[Color]) -> bool:
