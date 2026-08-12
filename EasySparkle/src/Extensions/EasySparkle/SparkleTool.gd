@@ -6,6 +6,9 @@ const SparklePalette = preload(
 const SparkleRegionFinder = preload(
 	"res://src/Extensions/EasySparkle/SparkleRegion.gd"
 )
+const SparkleFill = preload(
+	"res://src/Extensions/EasySparkle/SparkleFill.gd"
+)
 
 # Pixelorama tool interface (see src/Tools/BaseTool.gd)
 var is_moving := false
@@ -21,9 +24,9 @@ var _hover := Vector2i.ZERO
 # One labeled swatch per SparklePalette role, in SparklePalette.ROLE_ORDER.
 var _palette_swatches: Array[ColorRect] = []
 
-# The region targeted by the most recent click. Detection is read-only —
-# nothing here ever writes to the image. Recoloring the region is out of
-# scope for this tool revision and lands in a later change.
+# The region targeted by the most recent click, previewed via its outline
+# while also being the region the click's sparkle fill was (or would be)
+# applied to.
 var _region_points: Array[Vector2i] = []
 var _region_color := Color.TRANSPARENT
 var _has_region := false
@@ -61,7 +64,7 @@ func _ready() -> void:
 	add_child(_region_label)
 
 	var hint := Label.new()
-	hint.text = "Click a non-transparent pixel to target its connected, exact-color region."
+	hint.text = "Click a non-transparent pixel to sparkle-fill its connected, exact-color region."
 	hint.autowrap_mode = TextServer.AUTOWRAP_WORD_SMART
 	add_child(hint)
 
@@ -110,9 +113,12 @@ func update_config() -> void:
 	_update_palette_preview()
 
 
-## A click targets the connected, exact-color region under the cursor and
-## previews it. Nothing about this is destructive: unsupported cels,
-## transparent pixels, and out-of-bounds clicks simply clear the preview.
+## A click targets the connected, exact-color region under the cursor and,
+## in the same click, applies the structured sparkle fill to it. Unsupported
+## cels, transparent pixels, and out-of-bounds clicks are all no-ops that
+## simply clear the preview -- nothing is written to the image in those
+## cases. A successful fill is recorded as a single undoable/redoable
+## action.
 func draw_start(pos: Vector2i) -> void:
 	var project = ExtensionsApi.project.current_project
 	if project == null:
@@ -130,6 +136,14 @@ func draw_start(pos: Vector2i) -> void:
 	_region_points = result["points"]
 	_region_color = result["color"]
 	_has_region = true
+
+	var cels: Array[BaseCel] = [cel]
+	var undo_data := {}
+	project.serialize_cel_undo_data(cels, undo_data)
+
+	SparkleFill.apply(image, result)
+
+	_commit_undo(project, cels, undo_data)
 	_update_region_status()
 
 
@@ -195,6 +209,21 @@ func _update_region_status() -> void:
 		_region_label.text = "Region: %d pixel%s selected." % [count, "" if count == 1 else "s"]
 	else:
 		_region_label.text = "No region selected."
+
+
+## Registers the completed fill as one undoable/redoable action, the same
+## way EasyGradient's fill does: snapshot before (`undo_data`) and after
+## (`redo_data`) the write, then hand both to the project's UndoRedo.
+func _commit_undo(project, cels: Array[BaseCel], undo_data: Dictionary) -> void:
+	var global = ExtensionsApi.general.get_global()
+	global.canvas.update_selected_cels_textures(project)
+	var redo_data := {}
+	project.serialize_cel_undo_data(cels, redo_data)
+	project.undo_redo.create_action("Sparkle Fill")
+	project.deserialize_cel_undo_data(redo_data, undo_data)
+	project.undo_redo.add_do_method(global.undo_or_redo.bind(false, project.current_frame, project.current_layer))
+	project.undo_redo.add_undo_method(global.undo_or_redo.bind(true, project.current_frame, project.current_layer))
+	project.undo_redo.commit_action()
 
 
 func _clear_region() -> void:
