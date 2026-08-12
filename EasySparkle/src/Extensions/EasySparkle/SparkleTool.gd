@@ -3,6 +3,9 @@ extends Node
 const SparkleColorTransform = preload(
 	"res://src/Extensions/EasySparkle/SparkleColor.gd"
 )
+const SparkleRegionFinder = preload(
+	"res://src/Extensions/EasySparkle/SparkleRegion.gd"
+)
 
 # Pixelorama tool interface (see src/Tools/BaseTool.gd)
 var is_moving := false
@@ -17,16 +20,16 @@ var _adjustment_spin: SpinBox
 var _description: Label
 var _source_swatch: ColorRect
 var _result_swatch: ColorRect
+var _region_label: Label
 var _canvas: Node2D
 var _hover := Vector2i.ZERO
 
-var _stroke_active := false
-var _stroke_changed := false
-var _last_point := Vector2i.ZERO
-var _visited := {}
-var _stroke_project = null
-var _stroke_cels: Array[BaseCel] = []
-var _undo_data := {}
+# The region targeted by the most recent click. Detection is read-only —
+# nothing here ever writes to the image. Recoloring the region is out of
+# scope for this tool revision and lands in a later change.
+var _region_points: Array[Vector2i] = []
+var _region_color := Color.TRANSPARENT
+var _has_region := false
 
 
 func _ready() -> void:
@@ -66,8 +69,12 @@ func _ready() -> void:
 	_source_swatch = _make_swatch(swatch_row)
 	_result_swatch = _make_swatch(swatch_row)
 
+	_region_label = Label.new()
+	_region_label.autowrap_mode = TextServer.AUTOWRAP_WORD_SMART
+	add_child(_region_label)
+
 	var hint := Label.new()
-	hint.text = "Click or drag over pixels to apply. Each pixel changes once per stroke."
+	hint.text = "Click a non-transparent pixel to target its connected, exact-color region."
 	hint.autowrap_mode = TextServer.AUTOWRAP_WORD_SMART
 	add_child(hint)
 
@@ -75,6 +82,7 @@ func _ready() -> void:
 	load_config()
 	_update_description()
 	_update_preview()
+	_update_region_status()
 
 
 func _make_swatch(parent: Control) -> ColorRect:
@@ -117,52 +125,39 @@ func update_config() -> void:
 	_update_preview()
 
 
+## A click targets the connected, exact-color region under the cursor and
+## previews it. Nothing about this is destructive: unsupported cels,
+## transparent pixels, and out-of-bounds clicks simply clear the preview.
 func draw_start(pos: Vector2i) -> void:
 	var project = ExtensionsApi.project.current_project
 	if project == null:
+		_clear_region()
 		return
 	var cel = ExtensionsApi.project.get_current_cel()
 	if not cel is PixelCel:
+		_clear_region()
 		return
 	var image: Image = cel.get_image()
-	if image == null or not _in_bounds(image, pos):
+	var result := SparkleRegionFinder.find_region(image, pos)
+	if result.is_empty():
+		_clear_region()
 		return
-
-	_stroke_project = project
-	_stroke_cels = [cel]
-	_undo_data = {}
-	project.serialize_cel_undo_data(_stroke_cels, _undo_data)
-	_stroke_active = true
-	_stroke_changed = false
-	_visited.clear()
-	_last_point = pos
-	_transform_at(image, pos)
+	_region_points = result["points"]
+	_region_color = result["color"]
+	_has_region = true
+	_update_region_status()
 
 
-func draw_move(pos: Vector2i) -> void:
-	if not _stroke_active:
-		return
-	var image := _stroke_image()
-	if image == null:
-		return
-	for point in _line_points(_last_point, pos):
-		_transform_at(image, point)
-	_last_point = pos
+func draw_move(_pos: Vector2i) -> void:
+	pass
 
 
-func draw_end(pos: Vector2i) -> void:
-	if not _stroke_active:
-		return
-	var image := _stroke_image()
-	if image != null:
-		for point in _line_points(_last_point, pos):
-			_transform_at(image, point)
-	_finish_stroke(image)
+func draw_end(_pos: Vector2i) -> void:
+	pass
 
 
 func cancel_tool() -> void:
-	if _stroke_active:
-		_finish_stroke(_stroke_image())
+	_clear_region()
 
 
 func cursor_move(pos: Vector2i) -> void:
@@ -170,9 +165,17 @@ func cursor_move(pos: Vector2i) -> void:
 	_update_preview()
 
 
-func draw_indicator(_left: bool) -> void:
+func draw_indicator(left: bool) -> void:
 	if _canvas == null:
 		return
+
+	if _has_region:
+		var global = ExtensionsApi.general.get_global()
+		var region_color: Color = global.left_tool_color if left else global.right_tool_color
+		region_color.a = 0.35
+		for point in _region_points:
+			_canvas.indicators.draw_rect(Rect2(Vector2(point), Vector2.ONE), region_color, true)
+
 	var image := _current_image()
 	if image == null or not _in_bounds(image, _hover):
 		return
@@ -224,65 +227,21 @@ func _update_preview() -> void:
 	_result_swatch.color = transform_color(source, adjustment)
 
 
-func _transform_at(image: Image, point: Vector2i) -> void:
-	if not _in_bounds(image, point) or _visited.has(point):
+func _update_region_status() -> void:
+	if _region_label == null:
 		return
-	_visited[point] = true
-	var source := image.get_pixelv(point)
-	if source.a <= 0.0:
-		return
-	var result := transform_color(source, adjustment)
-	if result.is_equal_approx(source):
-		return
-	if image.has_method("set_pixelv_custom"):
-		image.set_pixelv_custom(point, result)
+	if _has_region:
+		var count := _region_points.size()
+		_region_label.text = "Region: %d pixel%s selected." % [count, "" if count == 1 else "s"]
 	else:
-		image.set_pixelv(point, result)
-	_stroke_changed = true
+		_region_label.text = "No region selected."
 
 
-func _finish_stroke(image: Image) -> void:
-	if _stroke_changed and image != null and image.get("is_indexed"):
-		image.convert_rgb_to_indexed()
-	if _stroke_changed:
-		_commit_undo()
-	_clear_stroke()
-	_update_preview()
-
-
-func _commit_undo() -> void:
-	var global = ExtensionsApi.general.get_global()
-	global.canvas.update_selected_cels_textures(_stroke_project)
-	var redo_data := {}
-	_stroke_project.serialize_cel_undo_data(_stroke_cels, redo_data)
-	_stroke_project.undo_redo.create_action("Easy Sparkle")
-	_stroke_project.deserialize_cel_undo_data(redo_data, _undo_data)
-	_stroke_project.undo_redo.add_do_method(
-		global.undo_or_redo.bind(
-			false, _stroke_project.current_frame, _stroke_project.current_layer
-		)
-	)
-	_stroke_project.undo_redo.add_undo_method(
-		global.undo_or_redo.bind(
-			true, _stroke_project.current_frame, _stroke_project.current_layer
-		)
-	)
-	_stroke_project.undo_redo.commit_action()
-
-
-func _clear_stroke() -> void:
-	_stroke_active = false
-	_stroke_changed = false
-	_visited.clear()
-	_stroke_project = null
-	_stroke_cels = []
-	_undo_data = {}
-
-
-func _stroke_image() -> Image:
-	if _stroke_cels.is_empty():
-		return null
-	return _stroke_cels[0].get_image()
+func _clear_region() -> void:
+	_region_points = []
+	_region_color = Color.TRANSPARENT
+	_has_region = false
+	_update_region_status()
 
 
 func _current_image() -> Image:
@@ -299,26 +258,3 @@ func _in_bounds(image: Image, point: Vector2i) -> bool:
 		and point.x < image.get_width()
 		and point.y < image.get_height()
 	)
-
-
-func _line_points(from: Vector2i, to: Vector2i) -> Array[Vector2i]:
-	var points: Array[Vector2i] = []
-	var dx := absi(to.x - from.x)
-	var dy := -absi(to.y - from.y)
-	var sx := 1 if from.x < to.x else -1
-	var sy := 1 if from.y < to.y else -1
-	var err := dx + dy
-	var x := from.x
-	var y := from.y
-	while true:
-		points.append(Vector2i(x, y))
-		if x == to.x and y == to.y:
-			break
-		var e2 := 2 * err
-		if e2 >= dy:
-			err += dy
-			x += sx
-		if e2 <= dx:
-			err += dx
-			y += sy
-	return points
