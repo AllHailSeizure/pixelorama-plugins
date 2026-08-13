@@ -4,16 +4,18 @@ extends RefCounted
 ## from a single sampled source color.
 ##
 ## Every non-base role is produced by running the source color through
-## SparkleColorTransform.transform (see SparkleColor.gd) at a fixed signed
-## percentage. That formula lerps OKHSL lightness toward white (positive) or
-## black (negative) while preserving hue, saturation, and alpha, and it
-## saturates at the endpoints instead of overshooting -- so for any input,
-## including near-black, near-white, low-saturation, and partially
-## transparent colors, increasing the shift amount never decreases
-## lightness and decreasing it never increases lightness. Fixing the six
-## roles at strictly increasing amounts therefore guarantees the roles keep
-## a stable, non-decreasing perceptual lightness order, even in degenerate
-## cases where several roles saturate to the same value.
+## SparkleColorTransform.transform (see SparkleColor.gd) with a fixed signed
+## lightness percentage and a subtle relative hue rotation. The formula
+## lerps OKHSL lightness toward white (positive) or black (negative), rotates
+## hue warmward for highlights and coolward for shadows, and preserves
+## saturation and alpha. It saturates lightness at the endpoints instead of
+## overshooting -- so for any input, including near-black, near-white,
+## low-saturation, and partially transparent colors, increasing the shift
+## amount never decreases lightness and decreasing it never increases
+## lightness. Fixing the six roles at strictly increasing amounts therefore
+## guarantees the roles keep a stable, non-decreasing perceptual lightness
+## order, even in degenerate cases where several roles saturate to the same
+## value.
 
 const SparkleColorTransform = preload("res://src/Extensions/EasySparkle/SparkleColor.gd")
 
@@ -52,6 +54,25 @@ const ROLE_AMOUNTS := {
 	Role.PEAK_SPARKLE: 85.0,
 }
 
+## Maximum relative OKHSL hue rotation, in turns (0.035 = 12.6 degrees).
+## This is intentionally subtle so every role still reads as the sampled
+## object color. Re-tune this one value to strengthen or soften the hue
+## shift without changing the ramp's proportions.
+const HUE_ROTATION_MAGNITUDE := 0.035
+
+## Signed relative hue rotation per role, parallel to ROLE_AMOUNTS. Positive
+## moves shadows coolward around the OKHSL wheel; negative moves highlights
+## warmward. A relative turn preserves the identity of every source hue,
+## unlike pulling all colors toward one absolute blue or yellow target.
+const ROLE_HUE_ROTATIONS := {
+	Role.DEEP_SHADOW: HUE_ROTATION_MAGNITUDE,
+	Role.SHADOW: HUE_ROTATION_MAGNITUDE * 0.5,
+	Role.BASE: 0.0,
+	Role.SOFT_HIGHLIGHT: HUE_ROTATION_MAGNITUDE * -0.35,
+	Role.BRIGHT_HIGHLIGHT: HUE_ROTATION_MAGNITUDE * -0.7,
+	Role.PEAK_SPARKLE: -HUE_ROTATION_MAGNITUDE,
+}
+
 const ROLE_NAMES := {
 	Role.DEEP_SHADOW: "Deep shadow",
 	Role.SHADOW: "Shadow",
@@ -81,7 +102,8 @@ static func build(source: Color) -> Dictionary:
 			palette[role] = source
 		else:
 			var amount: float = ROLE_AMOUNTS[role]
-			palette[role] = SparkleColorTransform.transform(source, amount).clamp()
+			var hue_rotation: float = ROLE_HUE_ROTATIONS[role]
+			palette[role] = SparkleColorTransform.transform(source, amount, hue_rotation).clamp()
 	return palette
 
 

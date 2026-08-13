@@ -28,8 +28,12 @@ func _init() -> void:
 		_assert_has_all_roles(palette, case_name)
 		_assert_base_identical(palette, source, case_name)
 		_assert_alpha_preserved(palette, source, case_name)
+		_assert_saturation_preserved(palette, source, case_name)
 		_assert_in_gamut(palette, case_name)
 		_assert_stable_lightness_order(palette, case_name)
+
+	_test_hue_rotates_in_opposite_directions()
+	_test_hue_rotation_wraps_at_both_ends()
 
 	print("EasySparkle palette derivation checks passed")
 	quit(0)
@@ -84,6 +88,70 @@ func _assert_stable_lightness_order(palette: Dictionary, case_name: String) -> v
 			)
 		)
 		previous_lightness = lightness
+
+
+func _test_hue_rotates_in_opposite_directions() -> void:
+	var source := Color.from_ok_hsl(0.40, 0.65, 0.50, 0.75)
+	var palette := SparklePalette.build(source)
+
+	for role in [SparklePalette.Role.DEEP_SHADOW, SparklePalette.Role.SHADOW]:
+		var result: Color = palette[role]
+		_assert(
+			_signed_hue_delta(result.ok_hsl_h, source.ok_hsl_h) > 0.0,
+			"shadow role %s should rotate hue in the coolward direction" % role
+		)
+
+
+func _assert_saturation_preserved(palette: Dictionary, source: Color, case_name: String) -> void:
+	for role in SparklePalette.ROLE_ORDER:
+		var result: Color = palette[role]
+		_assert(
+			absf(result.ok_hsl_s - source.ok_hsl_s) <= EPSILON,
+			(
+				"%s: role %s should preserve source saturation (got %f, expected %f)"
+				% [case_name, role, result.ok_hsl_s, source.ok_hsl_s]
+			)
+		)
+	for role in [
+		SparklePalette.Role.SOFT_HIGHLIGHT,
+		SparklePalette.Role.BRIGHT_HIGHLIGHT,
+		SparklePalette.Role.PEAK_SPARKLE,
+	]:
+		var result: Color = palette[role]
+		_assert(
+			_signed_hue_delta(result.ok_hsl_h, source.ok_hsl_h) < 0.0,
+			"highlight role %s should rotate hue in the warmward direction" % role
+		)
+
+
+func _test_hue_rotation_wraps_at_both_ends() -> void:
+	var near_zero := Color.from_ok_hsl(0.01, 0.65, 0.50, 1.0)
+	var zero_palette := SparklePalette.build(near_zero)
+	var warm_highlight: Color = zero_palette[SparklePalette.Role.PEAK_SPARKLE]
+	_assert(
+		warm_highlight.ok_hsl_h > 0.9 and warm_highlight.ok_hsl_h < 1.0,
+		"negative highlight rotation should wrap a near-zero hue into the top of [0, 1)"
+	)
+	_assert(
+		_signed_hue_delta(warm_highlight.ok_hsl_h, near_zero.ok_hsl_h) < 0.0,
+		"wrapped highlight hue should retain its warmward signed direction"
+	)
+
+	var near_one := Color.from_ok_hsl(0.99, 0.65, 0.50, 1.0)
+	var one_palette := SparklePalette.build(near_one)
+	var cool_shadow: Color = one_palette[SparklePalette.Role.DEEP_SHADOW]
+	_assert(
+		cool_shadow.ok_hsl_h >= 0.0 and cool_shadow.ok_hsl_h < 0.1,
+		"positive shadow rotation should wrap a near-one hue into the bottom of [0, 1)"
+	)
+	_assert(
+		_signed_hue_delta(cool_shadow.ok_hsl_h, near_one.ok_hsl_h) > 0.0,
+		"wrapped shadow hue should retain its coolward signed direction"
+	)
+
+
+func _signed_hue_delta(hue: float, source_hue: float) -> float:
+	return fposmod(hue - source_hue + 0.5, 1.0) - 0.5
 
 
 func _assert(condition: bool, message: String) -> void:
