@@ -23,6 +23,7 @@ func _init() -> void:
 	_test_default_seed_matches_explicit_seed_zero()
 	_test_same_seed_reproduces_same_arrangement()
 	_test_different_seed_changes_placement_but_not_quotas_or_palette()
+	_test_shadow_boundary_is_interleaved()
 	_test_reroll_regenerates_from_source_without_compounding()
 
 	print("EasySparkle fill checks passed")
@@ -311,8 +312,8 @@ func _test_same_seed_reproduces_same_arrangement() -> void:
 
 
 ## Rerolling must change *where* colors land while leaving the palette,
-## quotas, target region, and shadow-side lighting untouched -- only
-## highlight placement is seed-driven.
+## quotas, target region, and overall lighting direction untouched. Both
+## highlight and shadow boundaries are seed-driven now.
 func _test_different_seed_changes_placement_but_not_quotas_or_palette() -> void:
 	var built_a := _build_square_image(18)
 	var image_a: Image = built_a["image"]
@@ -324,7 +325,7 @@ func _test_different_seed_changes_placement_but_not_quotas_or_palette() -> void:
 	var region_b := SparkleRegion.find_region(image_b, built_b["offset"])
 	var counts_b := SparkleFill.apply(image_b, region_b, SparkleQuota.DEFAULT_PROFILE, 2)
 
-	_assert(not _images_equal(image_a, image_b), "different seeds should visibly change highlight placement")
+	_assert(not _images_equal(image_a, image_b), "different seeds should visibly change role placement")
 
 	for role in SparklePalette.ROLE_ORDER:
 		_assert(
@@ -341,6 +342,46 @@ func _test_different_seed_changes_placement_but_not_quotas_or_palette() -> void:
 		)
 
 	_assert(region_a["points"].size() == region_b["points"].size(), "target region should be unaffected by the seed")
+
+
+## The old shadow ranking used only the smooth direction score. Along every
+## row and column that made DEEP_SHADOW and SHADOW monotonic: one role could
+## meet the other at a clean line, but could never cross it and cross back.
+## Ordered dithering should produce repeated local A-B-A alternations along
+## that same boundary, proving the roles genuinely interdigitate instead of
+## merely sharing a slightly crooked edge.
+func _test_shadow_boundary_is_interleaved() -> void:
+	var built := _build_square_image(48)
+	var image: Image = built["image"]
+	var offset: Vector2i = built["offset"]
+	var size: int = built["size"]
+	var region := SparkleRegion.find_region(image, offset)
+	var palette := SparklePalette.build(region["color"])
+
+	SparkleFill.apply(image, region, SparkleQuota.DEFAULT_PROFILE, 37)
+
+	var deep_shadow: Color = palette[SparklePalette.Role.DEEP_SHADOW]
+	var shadow: Color = palette[SparklePalette.Role.SHADOW]
+	var alternations := 0
+	for y in range(offset.y, offset.y + size):
+		for x in range(offset.x + 1, offset.x + size - 1):
+			if _is_role_alternation(
+				image.get_pixel(x - 1, y), image.get_pixel(x, y), image.get_pixel(x + 1, y),
+				deep_shadow, shadow
+			):
+				alternations += 1
+	for x in range(offset.x, offset.x + size):
+		for y in range(offset.y + 1, offset.y + size - 1):
+			if _is_role_alternation(
+				image.get_pixel(x, y - 1), image.get_pixel(x, y), image.get_pixel(x, y + 1),
+				deep_shadow, shadow
+			):
+				alternations += 1
+
+	_assert(
+		alternations >= 4,
+		"deep-shadow/shadow boundary should interleave repeatedly (found %d local alternations)" % alternations
+	)
 
 
 ## A reroll is defined as calling apply() again for the same source region
@@ -372,6 +413,13 @@ func _color_in(color: Color, palette: Array[Color]) -> bool:
 		if _colors_match(color, candidate):
 			return true
 	return false
+
+
+func _is_role_alternation(a: Color, b: Color, c: Color, role_a: Color, role_b: Color) -> bool:
+	return (
+		(_colors_match(a, role_a) and _colors_match(b, role_b) and _colors_match(c, role_a))
+		or (_colors_match(a, role_b) and _colors_match(b, role_a) and _colors_match(c, role_b))
+	)
 
 
 ## Pixels are stored 8-bit-per-channel on the image, so a color read back
